@@ -1,4 +1,3 @@
-# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
 # SPDX-FileCopyrightText: 2026 spatterlight
 # SPDX-FileCopyrightText: 2026 Suguru Hirahara
 #
@@ -36,39 +35,9 @@ provisioner:
         # Variables for Nginx
         nginx_uid: 1000
         nginx_gid: 1000
-
-        # Disable the web-secure entrypoint: it would enable the ACME
-        # certificate issuer (pointing at the real Let's Encrypt), which is
-        # useless noise in an isolated test environment.
-        nginx_config_entrypoint_web_secure_enabled: false
-
-        # Enable the status page so that verify.yml can query it
-        # and check that HTTP Basic authentication works.
-        nginx_status_enabled: true
-        nginx_status_hostname: localhost
-        nginx_status_entrypoint: web
-        nginx_status_basicauth_enabled: true
-        # A pre-generated htpasswd entry (admin / molecule-test), so that the
-        # test does not need passlib on the controller. Molecule interpolates
-        # `$VAR` environment references in this file, hence the `$$` escaping.
-        nginx_status_basicauth_htpasswd: "admin:$$apr1$$m0l3cul3$$RiLTrahBQ8HDU0IGJitAZ0"
-
-        # A site which proxies to a whoami container (started by verify.yml).
-        # Proxying to a variable makes Nginx resolve the container's hostname at request time,
-        # so Nginx can start before the whoami container exists.
-        # Molecule interpolates `$VAR` environment references in this file, hence the `$$` escaping.
-        nginx_sites_custom:
-          - |
-            server {
-              server_name whoami.local;
-
-              include /config/entrypoints/web.conf;
-
-              location / {
-                set $$backend http://nginx-molecule-whoami:80;
-                proxy_pass $$backend;
-              }
-            }
+        nginx_hostname: localhost
+        nginx_container_labels_traefik_enabled: false
+        nginx_container_http_host_bind_port: 8080
   env:
     # Workaround for https://github.com/ansible/molecule/issues/4391
     ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..:/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles:~/.ansible/roles

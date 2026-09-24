@@ -1,0 +1,69 @@
+{#
+SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+SPDX-FileCopyrightText: 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+[Unit]
+Description=Nginx ({{ nginx_identifier }})
+{% for service in nginx_systemd_required_services_list %}
+Requires={{ service }}
+After={{ service }}
+{% endfor %}
+{% for service in nginx_systemd_wanted_services_list %}
+Wants={{ service }}
+{% endfor %}
+DefaultDependencies=no
+
+[Service]
+Type=simple
+Environment="HOME={{ devture_systemd_docker_base_systemd_unit_home_path }}"
+ExecStartPre={{ devture_systemd_docker_base_host_command_sh }} -c '{{ nginx_container_cleanup_command | trim | replace("\n", " ") }}'
+
+{#
+  The entrypoint is overridden to be the `nginx` binary itself, bypassing the image's `/docker-entrypoint.sh` script
+  (and its `/docker-entrypoint.d` hooks, which expect a writable filesystem).
+#}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
+      --rm \
+      --name={{ nginx_identifier }} \
+      --log-driver=none \
+      --network={{ nginx_container_network }} \
+      --user={{ nginx_uid }}:{{ nginx_gid }} \
+      --cap-drop=ALL \
+      --read-only \
+      {% if nginx_container_http_host_bind_port %}
+      -p {{ nginx_container_http_host_bind_port }}:{{ nginx_container_http_port }} \
+      {% endif %}
+      --env-file={{ nginx_base_path }}/env \
+      --label-file={{ nginx_base_path }}/labels \
+      --mount type=bind,src={{ nginx_config_path }},dst=/config,ro \
+      --mount type=bind,src={{ nginx_data_path }},dst=/data,ro \
+      {% for volume in nginx_container_additional_volumes %}
+      --mount type={{ volume.type | default('bind' if '/' in volume.src else 'volume') }},src={{ volume.src }},dst={{ volume.dst }}{{ (',' + volume.options) if volume.options else '' }} \
+      {% endfor %}
+      --tmpfs=/tmp:rw,noexec,nosuid,size={{ nginx_container_tmpfs_tmp_size }} \
+      {% for arg in nginx_container_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+      --entrypoint=nginx \
+      {{ nginx_container_image }} \
+      {% for arg in nginx_process_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+
+{% for network in nginx_container_additional_networks %}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} network connect {{ network }} {{ nginx_identifier }}
+{% endfor %}
+
+ExecStart={{ devture_systemd_docker_base_host_command_docker }} start --attach {{ nginx_identifier }}
+
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} stop -t {{ devture_systemd_docker_base_container_stop_grace_time_seconds }} {{ nginx_identifier }} 2>/dev/null'
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} rm {{ nginx_identifier }} 2>/dev/null'
+Restart=always
+RestartSec=30
+SyslogIdentifier={{ nginx_identifier }}
+
+[Install]
+WantedBy=multi-user.target

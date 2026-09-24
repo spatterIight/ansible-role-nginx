@@ -1,4 +1,3 @@
-# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
 # SPDX-FileCopyrightText: 2026 spatterlight
 # SPDX-FileCopyrightText: 2026 Suguru Hirahara
 #
@@ -17,9 +16,6 @@
   tasks:
     - name: Verify that Nginx works
       block:
-        # The systemd unit only reaches 'active' after its ExecStartPost healthcheck
-        # got an answer from Nginx's /ping endpoint, so 'active' already implies
-        # that Nginx is up and its static configuration parsed.
         - name: Wait for the Nginx systemd services to become active (up to 180s each)
           ansible.builtin.systemd_service:
             name: "{{ item }}"
@@ -50,84 +46,35 @@
           changed_when: false
           loop: "{{ nginx_verify_units }}"
 
-        - name: Ensure the web entrypoint answers (404 for an unknown host)
-          ansible.builtin.uri:
-            url: "http://localhost:80/"
-            method: GET
-            headers:
-              Host: unknown.example.com
-            status_code: [404]
-          register: nginx_web_entrypoint
-          until: nginx_web_entrypoint.status == 404
-          retries: 12
-          delay: 5
-
         - name: Ensure the Nginx configuration is valid
           ansible.builtin.command:
             cmd: docker exec nginx nginx -e stderr -c /config/nginx.conf -t
           register: nginx_config_test
           changed_when: false
 
-        - name: Ensure the status page requires authentication
-          ansible.builtin.uri:
-            url: "http://localhost:80/nginx_status"
-            method: GET
-            headers:
-              Host: localhost
-            status_code: [401]
+        - name: Ensure a test page exists in the Nginx data path
+          ansible.builtin.copy:
+            content: "Hello from Nginx Molecule tests\n"
+            dest: /nginx/data/index.html
+            mode: "0644"
 
-        - name: Query the Nginx status page
+        - name: Wait for Nginx HTTP endpoint to serve the test page (up to 1m)
           ansible.builtin.uri:
-            url: "http://localhost:80/nginx_status"
+            url: "http://localhost:8080/"
             method: GET
-            headers:
-              Host: localhost
-            url_username: admin
-            url_password: molecule-test
-            force_basic_auth: true
             return_content: true
-          register: nginx_status_page
-
-        - name: Assert the status page reports connection statistics
-          ansible.builtin.assert:
-            that:
-              - "'Active connections:' in nginx_status_page.content"
-            fail_msg: "Unexpected status page content: {{ nginx_status_page.content | default('') }}"
-            success_msg: "The status page reports connection statistics"
-
-        # Routing an actual container through Nginx exercises a site end-to-end:
-        # entrypoint snippets, runtime name resolution via Docker's embedded DNS, and proxying.
-        # Started via the docker CLI rather than community.docker.docker_container,
-        # because the ansible-lint environment used by pre-commit does not have the
-        # community.docker collection and would fail the syntax check.
-        - name: Start a whoami container attached to the Nginx network
-          ansible.builtin.command:
-            cmd: >-
-              docker run -d --rm
-              --name=nginx-molecule-whoami
-              --network=nginx
-              docker.io/traefik/whoami:latest
-          changed_when: true
-
-        - name: Wait for the whoami container to be routed through Nginx
-          ansible.builtin.uri:
-            url: "http://localhost:80/"
-            method: GET
-            headers:
-              Host: whoami.local
-            return_content: true
-          register: nginx_whoami_response
-          until: nginx_whoami_response.status == 200
+          register: nginx_endpoint
+          until: nginx_endpoint.status == 200
           retries: 12
           delay: 5
 
-        - name: Assert the whoami container was served through Nginx
+        - name: Assert Nginx HTTP endpoint serves the test page
           ansible.builtin.assert:
             that:
-              - nginx_whoami_response.status == 200
-              - "'Hostname:' in nginx_whoami_response.content"
-            fail_msg: "whoami was not served through Nginx ({{ nginx_whoami_response.status | default('no response') }})"
-            success_msg: "whoami was served through Nginx"
+              - nginx_endpoint.status == 200
+              - "'Hello from Nginx Molecule tests' in nginx_endpoint.content"
+            fail_msg: "Nginx did not serve the test page as expected ({{ nginx_endpoint.status | default('no response') }})"
+            success_msg: "Nginx served the test page"
 
         - name: Verify nothing was quietly restarting while all of that was being checked
           when: "nginx_restarts_check_enabled | bool"
@@ -173,10 +120,8 @@
             msg:
               - "Nginx systemd: {% for unit, state in nginx_verify_units | zip(nginx_services.results | map(attribute='status.ActiveState')) %}{{ unit }} ({{ state }}){% if not loop.last %}, {% endif %}{% endfor %}"
               - "Nginx restarts: {% for unit, restarts in nginx_verify_units | zip(nginx_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %}"
-              - "Nginx Web entrypoint: {{ nginx_web_entrypoint.status }}"
               - "Nginx configuration test: {{ nginx_config_test.rc }}"
-              - "Nginx status page: {{ nginx_status_page.status }}"
-              - "Nginx site routing (whoami): {{ nginx_whoami_response.status }}"
+              - "Nginx HTTP: {{ nginx_endpoint.status }}"
 
       rescue:
         # Whatever went wrong, the reason is almost always in the systemd service log.

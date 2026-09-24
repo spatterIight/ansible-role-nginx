@@ -3,17 +3,13 @@
 #
 # To extend this:
 # - tweak the individual variables
-# - use `nginx_configuration_extension_main` and `nginx_configuration_extension_http` to introduce new directives
-# - use `nginx_sites` and `nginx_sites_configuration_extension` to introduce new sites
-
-{% for module in nginx_config_load_modules %}
-load_module {{ module }};
-{% endfor %}
+# - use `nginx_server_configuration` to change what the default server does
+# - use `nginx_configuration_extension` to introduce new directives in the `http` context
 
 daemon off;
 worker_processes {{ nginx_config_worker_processes }};
 
-# The container runs with a read-only filesystem, so everything that needs to be written goes to the `/tmp` tmpfs.
+# The container's filesystem is read-only, so everything that needs to be written goes to the `/tmp` tmpfs.
 pid /tmp/nginx.pid;
 
 error_log stderr {{ nginx_config_log_level }};
@@ -21,8 +17,6 @@ error_log stderr {{ nginx_config_log_level }};
 events {
   worker_connections {{ nginx_config_worker_connections }};
 }
-
-{{ nginx_configuration_extension_main }}
 
 http {
   include /etc/nginx/mime.types;
@@ -34,189 +28,29 @@ http {
   uwsgi_temp_path /tmp/uwsgi;
   scgi_temp_path /tmp/scgi;
 
-  server_tokens {{ nginx_config_http_server_tokens }};
-
-  sendfile on;
-  tcp_nopush on;
-
-  {% if nginx_config_http_resolver %}
-  resolver {{ nginx_config_http_resolver }} valid={{ nginx_config_http_resolver_valid }} ipv6={{ 'on' if nginx_config_http_resolver_ipv6_enabled | bool else 'off' }};
-  {% endif %}
-
   {% if nginx_config_access_log_enabled %}
-    {% if nginx_config_access_log_format == 'json' %}
-  log_format json escape=json '{'
-    '"time":"$time_iso8601",'
-    '"remote_addr":"$remote_addr",'
-    '"remote_user":"$remote_user",'
-    '"host":"$host",'
-    '"request_method":"$request_method",'
-    '"request_uri":"$request_uri",'
-    '"server_protocol":"$server_protocol",'
-    '"status":$status,'
-    '"body_bytes_sent":$body_bytes_sent,'
-    '"request_time":$request_time,'
-    '"upstream_addr":"$upstream_addr",'
-    '"upstream_response_time":"$upstream_response_time",'
-    '"http_referer":"$http_referer",'
-    '"http_user_agent":"$http_user_agent"'
-  '}';
-    {% endif %}
-  access_log {{ nginx_config_access_log_file_path }} {{ nginx_config_access_log_format }}{% if nginx_config_access_log_buffer_size %} buffer={{ nginx_config_access_log_buffer_size }}{% endif %};
+  access_log /dev/stdout combined;
   {% else %}
   access_log off;
   {% endif %}
 
-  client_max_body_size {{ nginx_config_http_client_max_body_size }};
-
-  client_header_timeout {{ nginx_config_http_client_header_timeout }};
-  client_body_timeout {{ nginx_config_http_client_body_timeout }};
-  send_timeout {{ nginx_config_http_send_timeout }};
-  keepalive_timeout {{ nginx_config_http_keepalive_timeout }};
-
-  {% if nginx_config_http_real_ip_enabled %}
-    {% for ip in nginx_config_http_real_ip_trusted_ips_final %}
-  set_real_ip_from {{ ip }};
-    {% endfor %}
-  real_ip_header {{ nginx_config_http_real_ip_header }};
-  real_ip_recursive on;
+  {% if nginx_config_resolver %}
+  resolver {{ nginx_config_resolver }};
   {% endif %}
 
-  ssl_protocols {{ nginx_config_http_ssl_protocols | join(' ') }};
-  ssl_ciphers {{ nginx_config_http_ssl_ciphers }};
-  ssl_prefer_server_ciphers {{ nginx_config_http_ssl_prefer_server_ciphers }};
-  ssl_session_cache {{ nginx_config_http_ssl_session_cache }};
-  ssl_session_timeout {{ nginx_config_http_ssl_session_timeout }};
-  ssl_session_tickets {{ nginx_config_http_ssl_session_tickets }};
+  server_tokens off;
+  sendfile on;
+  tcp_nopush on;
 
-  {% if nginx_config_http_gzip_enabled %}
-  gzip on;
-  gzip_vary on;
-  gzip_proxied {{ nginx_config_http_gzip_proxied }};
-  gzip_comp_level {{ nginx_config_http_gzip_comp_level }};
-  gzip_min_length {{ nginx_config_http_gzip_min_length }};
-  gzip_types {{ nginx_config_http_gzip_types | join(' ') }};
-  {% endif %}
+  client_max_body_size {{ nginx_config_client_max_body_size }};
 
-  {% if nginx_config_http_proxy_defaults_enabled %}
-  map $http_upgrade $nginx_connection_upgrade {
-    default upgrade;
-    '' close;
-  }
-
-  proxy_http_version 1.1;
-  proxy_set_header Host $host;
-  proxy_set_header Upgrade $http_upgrade;
-  proxy_set_header Connection $nginx_connection_upgrade;
-  proxy_set_header X-Real-IP $remote_addr;
-  {# Only pass along the incoming X-Forwarded-For header if it's coming from a trusted source. #}
-  proxy_set_header X-Forwarded-For {{ '$proxy_add_x_forwarded_for' if nginx_config_http_real_ip_enabled else '$remote_addr' }};
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header X-Forwarded-Host $host;
-  {% endif %}
-
-  proxy_connect_timeout {{ nginx_config_http_proxy_connect_timeout }};
-  proxy_send_timeout {{ nginx_config_http_proxy_send_timeout }};
-  proxy_read_timeout {{ nginx_config_http_proxy_read_timeout }};
-
-  {% if nginx_config_acme_issuer_enabled %}
-  acme_shared_zone zone=ngx_acme_shared:{{ nginx_config_acme_shared_zone_size }};
-
-  acme_issuer {{ nginx_config_acme_issuer_name }} {
-    uri {{ nginx_config_acme_issuer_uri }};
-    {% if nginx_config_acme_issuer_email %}
-    contact {{ nginx_config_acme_issuer_email }};
-    {% endif %}
-    state_path {{ nginx_config_acme_issuer_state_path }};
-    challenge {{ nginx_config_acme_issuer_challenge }};
-    {% if nginx_config_acme_issuer_accept_terms_of_service %}
-    accept_terms_of_service;
-    {% endif %}
-    {% if nginx_config_acme_issuer_additional_configuration %}
-
-    {{ nginx_config_acme_issuer_additional_configuration | trim | indent(4) }}
-    {% endif %}
-  }
-  {% endif %}
-
-  {% if nginx_config_entrypoint_web_enabled %}
-  # Default (catch-all) server for the `{{ nginx_config_entrypoint_web_name }}` entrypoint
   server {
-    listen {{ nginx_config_entrypoint_web_port_in_container }} default_server;
-    {% if nginx_config_listen_ipv6_enabled %}
-    listen [::]:{{ nginx_config_entrypoint_web_port_in_container }} default_server;
-    {% endif %}
+    listen {{ nginx_container_http_port }} default_server;
 
-    {% if nginx_config_entrypoint_web_to_web_secure_redirection_enabled %}
-    return {{ nginx_config_entrypoint_web_to_web_secure_redirection_status_code }} {{ nginx_config_entrypoint_web_to_web_secure_redirection_scheme }}://$host{{ nginx_config_entrypoint_web_to_web_secure_redirection_port_suffix }}$request_uri;
-    {% else %}
-    return 404;
-    {% endif %}
+    {{ nginx_server_configuration | trim | indent(4) }}
   }
+  {% if nginx_configuration_extension | trim %}
+
+  {{ nginx_configuration_extension | trim | indent(2) }}
   {% endif %}
-
-  {% if nginx_config_entrypoint_web_secure_enabled %}
-  # Default (catch-all) server for the `{{ nginx_config_entrypoint_web_secure_name }}` entrypoint.
-  # It rejects TLS handshakes for unknown hostnames, so that no certificate is needed for it.
-  server {
-    listen {{ nginx_config_entrypoint_web_secure_port_in_container }} ssl default_server;
-    {% if nginx_config_listen_ipv6_enabled %}
-    listen [::]:{{ nginx_config_entrypoint_web_secure_port_in_container }} ssl default_server;
-    {% endif %}
-    {% if nginx_config_entrypoint_web_secure_http3_enabled %}
-    listen {{ nginx_config_entrypoint_web_secure_port_in_container }} quic reuseport default_server;
-      {% if nginx_config_listen_ipv6_enabled %}
-    listen [::]:{{ nginx_config_entrypoint_web_secure_port_in_container }} quic reuseport default_server;
-      {% endif %}
-    {% endif %}
-
-    ssl_reject_handshake on;
-
-    return 404;
-  }
-  {% endif %}
-
-  {% if nginx_config_entrypoint_metrics_enabled %}
-  # The `{{ nginx_config_entrypoint_metrics_name }}` entrypoint
-  server {
-    listen {{ nginx_config_entrypoint_metrics_port_in_container }};
-    {% if nginx_config_listen_ipv6_enabled %}
-    listen [::]:{{ nginx_config_entrypoint_metrics_port_in_container }};
-    {% endif %}
-
-    access_log off;
-
-    {% if nginx_config_metrics_stub_status_enabled %}
-    location = {{ nginx_config_metrics_stub_status_path }} {
-      stub_status;
-    }
-    {% endif %}
-
-    location / {
-      return 404;
-    }
-  }
-  {% endif %}
-
-  {% if nginx_config_entrypoint_health_enabled %}
-  # The `{{ nginx_config_entrypoint_health_name }}` entrypoint (only reachable from within the container)
-  server {
-    listen 127.0.0.1:{{ nginx_config_entrypoint_health_port_in_container }};
-
-    access_log off;
-
-    location = /ping {
-      default_type text/plain;
-      return 200 "OK";
-    }
-
-    location / {
-      return 404;
-    }
-  }
-  {% endif %}
-
-  include /config/sites.conf;
-
-{{ nginx_configuration_extension_http | indent(2, first=true) }}
 }

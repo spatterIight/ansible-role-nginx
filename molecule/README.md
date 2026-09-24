@@ -47,7 +47,7 @@ Currently there is one testing scenario available.
 
 ### `default`
 
-Tests a standard Nginx installation.
+Tests a standard Nginx installation, serving static files.
 
 ## Running
 

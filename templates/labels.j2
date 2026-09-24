@@ -1,8 +1,65 @@
 {#
 SPDX-FileCopyrightText: 2023 Slavi Pantaleev
-SPDX-FileCopyrightText: 2026 spatterlight
+SPDX-FileCopyrightText: 2025, 2026 spatterlight
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 #}
 
-{{ nginx_labels_additional_labels }}
+{% if nginx_container_labels_traefik_enabled %}
+traefik.enable=true
+
+{% if nginx_container_labels_traefik_docker_network %}
+traefik.docker.network={{ nginx_container_labels_traefik_docker_network }}
+{% endif %}
+
+{% set middlewares = [] %}
+
+{% if nginx_container_labels_traefik_compression_middleware_enabled %}
+{% set middlewares = middlewares + [nginx_container_labels_traefik_compression_middleware_name] %}
+{% endif %}
+
+{% if nginx_path_prefix != '/' %}
+{#
+    This redirect-slash middleware redirects a custom prefix (e.g. `/files`) which
+    has no trailing slash to the same thing, but with a trailing slash (e.g. `/files/`).
+    Without this, relative URLs (e.g. for assets) get resolved against the wrong path.
+#}
+{% set middlewares = middlewares + [nginx_identifier + '-no-trailing-slash-redirect'] %}
+traefik.http.middlewares.{{ nginx_identifier }}-no-trailing-slash-redirect.redirectregex.regex=^(https?)://([^/]+){{ nginx_path_prefix | quote }}$
+traefik.http.middlewares.{{ nginx_identifier }}-no-trailing-slash-redirect.redirectregex.replacement=${1}://${2}{{ nginx_path_prefix | quote }}/
+{% endif %}
+
+{% if nginx_container_labels_traefik_additional_request_headers.keys() | length > 0 %}
+{% for name, value in nginx_container_labels_traefik_additional_request_headers.items() %}
+traefik.http.middlewares.{{ nginx_identifier }}-add-request-headers.headers.customrequestheaders.{{ name }}={{ value }}
+{% endfor %}
+{% set middlewares = middlewares + [nginx_identifier + '-add-request-headers'] %}
+{% endif %}
+
+{% if nginx_container_labels_traefik_additional_response_headers.keys() | length > 0 %}
+{% for name, value in nginx_container_labels_traefik_additional_response_headers.items() %}
+traefik.http.middlewares.{{ nginx_identifier }}-add-response-headers.headers.customresponseheaders.{{ name }}={{ value }}
+{% endfor %}
+{% set middlewares = middlewares + [nginx_identifier + '-add-response-headers'] %}
+{% endif %}
+
+traefik.http.routers.{{ nginx_identifier }}.rule={{ nginx_container_labels_traefik_rule }}
+{% if nginx_container_labels_traefik_priority | int > 0 %}
+traefik.http.routers.{{ nginx_identifier }}.priority={{ nginx_container_labels_traefik_priority }}
+{% endif %}
+traefik.http.routers.{{ nginx_identifier }}.service={{ nginx_identifier }}
+{% if middlewares | length > 0 %}
+traefik.http.routers.{{ nginx_identifier }}.middlewares={{ middlewares | join(',') }}
+{% endif %}
+traefik.http.routers.{{ nginx_identifier }}.entrypoints={{ nginx_container_labels_traefik_entrypoints }}
+traefik.http.routers.{{ nginx_identifier }}.tls={{ nginx_container_labels_traefik_tls | to_json }}
+{% if nginx_container_labels_traefik_tls %}
+traefik.http.routers.{{ nginx_identifier }}.tls.certResolver={{ nginx_container_labels_traefik_tls_certResolver }}
+{% endif %}
+
+traefik.http.services.{{ nginx_identifier }}.loadbalancer.server.port={{ nginx_container_http_port }}
+{% endif %}
+
+{% for arg in nginx_container_labels_additional_labels %}
+{{ arg }}
+{% endfor %}

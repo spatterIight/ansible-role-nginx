@@ -1,21 +1,21 @@
-# SPDX-FileCopyrightText: 2023 Julian-Samuel Gebühr
-# SPDX-FileCopyrightText: 2023 MASH project contributors
-# SPDX-FileCopyrightText: 2023 Niels Bouma
-# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
-# SPDX-FileCopyrightText: 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2023 - 2025 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2025 MASH project contributors
+# SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
 # SPDX-FileCopyrightText: 2026 spatterlight
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 ---
+
+# Nginx is a web server, reverse proxy and caching server.
 # Project source code URL: https://github.com/nginx/nginx
 
 nginx_enabled: true
 
 nginx_identifier: nginx
 nginx_base_path: "/{{ nginx_identifier }}"
-nginx_config_dir_path: "{{ nginx_base_path }}/config"
-nginx_ssl_dir_path: "{{ nginx_base_path }}/ssl"
+nginx_config_path: "{{ nginx_base_path }}/config"
+nginx_data_path: "{{ nginx_base_path }}/data"
 
 # renovate: datasource=docker depName=library/nginx versioning=semver
 nginx_version: 1.31.6
@@ -23,9 +23,13 @@ nginx_version: 1.31.6
 nginx_uid: ""
 nginx_gid: ""
 
-# We use the Alpine-based image, because it ships with the ACME module (`ngx_http_acme_module`),
-# which this role uses for obtaining SSL certificates (see `nginx_config_acme_issuer_enabled`).
-# The ACME module is not available on the `armhf` architecture.
+# The hostname at which Nginx is served.
+nginx_hostname: ""
+
+# The path at which Nginx is served.
+# This value must either be `/` or not end with a slash (e.g. `/nginx`).
+nginx_path_prefix: /
+
 nginx_container_image: "{{ nginx_container_image_registry_prefix }}nginx:{{ nginx_container_image_tag }}"
 nginx_container_image_tag: "{{ nginx_version }}-alpine"
 nginx_container_image_registry_prefix: "{{ nginx_container_image_registry_prefix_upstream }}"
@@ -33,53 +37,30 @@ nginx_container_image_registry_prefix_upstream: "{{ nginx_container_image_regist
 nginx_container_image_registry_prefix_upstream_default: docker.io/
 
 # The base container network. It will be auto-created by this role if it doesn't exist already.
-nginx_container_network: nginx
+nginx_container_network: "{{ nginx_identifier }}"
 
 # Control if the container network is deleted on uninstalling.
 nginx_container_network_deletion_enabled: true
 
-# Specify how the container publishes its web port
+# The port number that Nginx listens on inside the container.
 #
-# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:80"), just a port number or an empty string to not expose.
-nginx_container_web_host_bind_port: "{{ nginx_config_entrypoint_web_port if nginx_config_entrypoint_web_enabled else '' }}"
+# The container runs as a non-root user, so this needs to be an unprivileged port (1024 or higher).
+nginx_container_http_port: 8080
 
-# Specify how the container publishes its TCP web-secure port
+# Specify how the container publishes its HTTP port (as defined by `nginx_container_http_port`).
 #
-# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:443"), just a port number or an empty string to not expose.
-nginx_container_web_secure_host_bind_port: "{{ nginx_config_entrypoint_web_secure_port if nginx_config_entrypoint_web_secure_enabled else '' }}"
-
-# Specify how the container publishes its UDP web-secure port
-#
-# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:443"), just a port number or an empty string to not expose.
-nginx_container_web_secure_host_bind_port_udp: "{{ nginx_config_entrypoint_web_secure_http3_advertised_port if nginx_config_entrypoint_web_secure_enabled and nginx_config_entrypoint_web_secure_http3_enabled else '' }}"
-
-# Specify how the container publishes its metrics port
-#
-# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:8082"), just a port number or an empty string to not expose.
-nginx_container_metrics_host_bind_port: "{{ nginx_config_entrypoint_metrics_port if nginx_config_entrypoint_metrics_enabled else '' }}"
+# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:8080"), or empty string to not expose.
+nginx_container_http_host_bind_port: ""
 
 # A list of additional container networks that the container would be connected to.
 # The role does not create these networks, so make sure they already exist.
-nginx_container_additional_networks: "{{ (nginx_container_additional_networks_auto + nginx_container_additional_networks_custom) | unique }}"
+# Use this to expose this container to another reverse proxy, which runs in a different container network,
+# or to let Nginx reach other containers (e.g. when using it as a reverse-proxy for them).
+nginx_container_additional_networks: "{{ nginx_container_additional_networks_auto + nginx_container_additional_networks_custom }}"
+# nginx_container_additional_networks_auto is reserved for usage by the playbook.
+# Your custom networks should go into nginx_container_additional_networks_custom.
 nginx_container_additional_networks_auto: []
 nginx_container_additional_networks_custom: []
-
-# A list of DNS search domains for the container (Docker's `--dns-search`).
-#
-# The default (`['.']`) removes all search domains, so a hostname that Docker's
-# embedded DNS cannot resolve (e.g. a backend container that is currently down
-# or restarting) fails with NXDOMAIN right away.
-#
-# Without this, the container inherits the host's search domains, which is
-# dangerous for a reverse-proxy: a temporarily-missing backend container name
-# gets retried with the host's search domains appended and may resolve via
-# public DNS — potentially to the very host Nginx runs on, making Nginx
-# proxy requests to its own web entrypoint (a redirect loop) or to some other
-# unrelated server.
-#
-# Set to an empty list (`[]`) to restore the old behavior of inheriting the
-# host's search domains.
-nginx_container_dns_search_domains: ['.']
 
 # A list of additional "volumes" to mount in the container.
 # This list gets populated dynamically at runtime. You can provide a different default value,
@@ -90,14 +71,62 @@ nginx_container_additional_volumes: "{{ nginx_container_additional_volumes_auto 
 nginx_container_additional_volumes_auto: []
 nginx_container_additional_volumes_custom: []
 
-# nginx_labels_additional_labels contains a multiline string with additional labels to add to the container label file.
+# nginx_container_labels_traefik_enabled controls whether labels to assist a Traefik reverse-proxy will be attached to the container.
 # See `../templates/labels.j2` for details.
 #
+# To inject your own other container labels, see `nginx_container_labels_additional_labels_custom`.
+nginx_container_labels_traefik_enabled: true
+nginx_container_labels_traefik_docker_network: "{{ nginx_container_network }}"
+nginx_container_labels_traefik_hostname: "{{ nginx_hostname }}"
+# The path prefix must either be `/` or not end with a slash (e.g. `/nginx`).
+nginx_container_labels_traefik_path_prefix: "{{ nginx_path_prefix }}"
+nginx_container_labels_traefik_rule: "Host(`{{ nginx_container_labels_traefik_hostname }}`){% if nginx_container_labels_traefik_path_prefix != '/' %} && PathPrefix(`{{ nginx_container_labels_traefik_path_prefix }}`){% endif %}"
+nginx_container_labels_traefik_priority: 0
+nginx_container_labels_traefik_entrypoints: web-secure
+nginx_container_labels_traefik_tls: "{{ nginx_container_labels_traefik_entrypoints != 'web' }}"
+nginx_container_labels_traefik_tls_certResolver: default  # noqa var-naming
+
+# Controls whether a compression middleware will be injected into the middlewares list.
+# This compression middleware is supposed to be defined elsewhere (using labels or a File provider, etc.) and is merely referenced by this router.
+nginx_container_labels_traefik_compression_middleware_enabled: false
+nginx_container_labels_traefik_compression_middleware_name: ""
+
+# Controls which additional headers to attach to all HTTP requests.
+# To add your own custom request headers, use `nginx_container_labels_traefik_additional_request_headers_custom`
+nginx_container_labels_traefik_additional_request_headers: "{{ nginx_container_labels_traefik_additional_request_headers_auto | combine(nginx_container_labels_traefik_additional_request_headers_custom) }}"
+nginx_container_labels_traefik_additional_request_headers_auto: {}
+nginx_container_labels_traefik_additional_request_headers_custom: {}
+
+# Controls which additional headers to attach to all HTTP responses.
+# To add your own custom response headers, use `nginx_container_labels_traefik_additional_response_headers_custom`
+nginx_container_labels_traefik_additional_response_headers: "{{ nginx_container_labels_traefik_additional_response_headers_auto | combine(nginx_container_labels_traefik_additional_response_headers_custom) }}"
+nginx_container_labels_traefik_additional_response_headers_auto: |
+  {{
+    {}
+    | combine ({'X-XSS-Protection': nginx_http_header_xss_protection} if nginx_http_header_xss_protection else {})
+    | combine ({'X-Content-Type-Options': nginx_http_header_content_type_options} if nginx_http_header_content_type_options else {})
+    | combine ({'Content-Security-Policy': nginx_http_header_content_security_policy} if nginx_http_header_content_security_policy else {})
+    | combine ({'Permissions-Policy': nginx_http_header_permissions_policy} if nginx_http_header_permissions_policy else {})
+    | combine ({'Strict-Transport-Security': nginx_http_header_strict_transport_security} if nginx_http_header_strict_transport_security and nginx_container_labels_traefik_tls else {})
+  }}
+nginx_container_labels_traefik_additional_response_headers_custom: {}
+
+# nginx_container_labels_additional_labels contains a multiline string with additional labels to add to the container label file.
+# See `../templates/labels.j2` for details.
+# To add your own custom labels, use `nginx_container_labels_additional_labels_custom`
+#
 # Example:
-# nginx_labels_additional_labels: |
-#   my.label=1
-#   another.label="here"
-nginx_labels_additional_labels: ""
+# nginx_container_labels_additional_labels_custom:
+#   - my.label=1
+#   - another.label="here"
+nginx_container_labels_additional_labels: "{{ nginx_container_labels_additional_labels_auto + nginx_container_labels_additional_labels_custom }}"
+nginx_container_labels_additional_labels_auto: []
+nginx_container_labels_additional_labels_custom: []
+
+# Specify the size of the container's tmpfs volume.
+# The container's filesystem is read-only, so Nginx stores its PID file and all of its
+# temporary files (request bodies being uploaded, buffered upstream responses, etc.) there.
+nginx_container_tmpfs_tmp_size: 128m
 
 # A list of extra arguments to pass to the container (`docker create` command)
 nginx_container_extra_arguments: "{{ nginx_container_extra_arguments_auto + nginx_container_extra_arguments_custom }}"
@@ -105,10 +134,8 @@ nginx_container_extra_arguments_auto: []
 nginx_container_extra_arguments_custom: []
 
 # A list of extra arguments to pass to the process inside the container
-# Example: ['--SOME_ARGUMENT']
 #
-# The container's entrypoint is overridden to be the `nginx` binary itself
-# (bypassing the image's `/docker-entrypoint.sh` script and its `/docker-entrypoint.d` hooks),
+# The container's entrypoint is overridden to be the `nginx` binary itself,
 # so these arguments are passed to `nginx` directly.
 #
 # `-e stderr` makes Nginx log early startup errors (before `nginx.conf` is parsed) to stderr,
@@ -119,11 +146,52 @@ nginx_process_extra_arguments_auto:
   - -c /config/nginx.conf
 nginx_process_extra_arguments_custom: []
 
-# Controls the size of the tmpfs mounted at `/tmp` in the container.
-# Nginx stores its PID file and all of its temporary files there
-# (request bodies being uploaded, buffered responses from upstream servers, etc.),
-# so this limits how large a request/response can grow before Nginx fails to buffer it.
-nginx_tmp_directory_size_mb: 500
+# Specifies the value of the `X-XSS-Protection` header
+# Stops pages from loading when they detect reflected cross-site scripting (XSS) attacks.
+#
+# Learn more about it is here:
+# - https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-XSS-Protection
+# - https://portswigger.net/web-security/cross-site-scripting/reflected
+nginx_http_header_xss_protection: "1; mode=block"
+
+# Specifies the value of the `X-Content-Type-Options` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options
+nginx_http_header_content_type_options: nosniff
+
+# Specifies the value of the `Content-Security-Policy` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
+nginx_http_header_content_security_policy: frame-ancestors 'self'
+
+# Specifies the value of the `Permissions-Policy` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy
+nginx_http_header_permissions_policy: "{{ 'interest-cohort=()' if nginx_floc_optout_enabled else '' }}"
+
+# Specifies the value of the `Strict-Transport-Security` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
+nginx_http_header_strict_transport_security: "max-age=31536000; includeSubDomains{{ '; preload' if nginx_hsts_preload_enabled else '' }}"
+
+# Controls whether to send a "Permissions-Policy interest-cohort=();" header along with all responses
+#
+# Learn more about what it is here:
+# - https://www.eff.org/deeplinks/2021/03/googles-floc-terrible-idea
+# - https://paramdeo.com/blog/opting-your-website-out-of-googles-floc-network
+# - https://amifloced.org/
+#
+# Of course, a better solution is to just stop using browsers (like Chrome), which participate in such tracking practices.
+# See: `nginx_http_header_permissions_policy`
+nginx_floc_optout_enabled: true
+
+# Controls if HSTS preloading is enabled
+#
+# In its strongest and recommended form, the [HSTS policy](https://www.chromium.org/hsts) includes all subdomains, and
+# indicates a willingness to be "preloaded" into browsers:
+# `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`
+# For more information visit:
+# - https://en.wikipedia.org/wiki/HTTP_Strict_Transport_Security
+# - https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
+# - https://hstspreload.org/#opt-in
+# See: `nginx_http_header_strict_transport_security`
+nginx_hsts_preload_enabled: false
 
 # List of systemd services that the Nginx systemd service depends on
 nginx_systemd_required_services_list: "{{ nginx_systemd_required_services_list_default + nginx_systemd_required_services_list_auto + nginx_systemd_required_services_list_custom }}"
@@ -136,10 +204,6 @@ nginx_systemd_wanted_services_list: "{{ nginx_systemd_wanted_services_list_defau
 nginx_systemd_wanted_services_list_default: []
 nginx_systemd_wanted_services_list_auto: []
 nginx_systemd_wanted_services_list_custom: []
-
-# Controls the SyslogIdentifier value in the systemd service file.
-# Certain software (like CrowdSec) may expect a special value (e.g. `nginx`), so we allow overriding.
-nginx_systemd_syslog_identifier: "{{ nginx_identifier }}"
 
 # Controls how long to wait for the container to stop gracefully before killing it.
 nginx_container_stop_grace_time_seconds: "{{ devture_systemd_docker_base_container_stop_grace_time_seconds }}"
@@ -172,501 +236,95 @@ nginx_container_cleanup_command: |
   echo "Failed to remove stale container {{ nginx_identifier }} after {{ nginx_container_cleanup_timeout_seconds }} attempts" >&2;
   exit 1
 
-nginx_ssl_dir_enabled: "{{ nginx_config_acme_issuer_enabled }}"
+########################################################################
+#                                                                      #
+# configuration                                                        #
+#                                                                      #
+########################################################################
 
-# A list of dynamic modules to load (via `load_module`) at the top of `nginx.conf`.
-# Paths are relative to the Nginx prefix directory in the container (`/etc/nginx`).
-#
-# The ACME module is loaded automatically when needed (see `nginx_config_acme_issuer_enabled`).
-#
-# Besides it, the Alpine-based image also ships with these modules:
-# - modules/ngx_http_geoip_module.so
-# - modules/ngx_stream_geoip_module.so
-# - modules/ngx_http_image_filter_module.so
-# - modules/ngx_http_js_module.so
-# - modules/ngx_stream_js_module.so
-# - modules/ngx_http_xslt_filter_module.so
-nginx_config_load_modules: "{{ (nginx_config_load_modules_default + nginx_config_load_modules_auto + nginx_config_load_modules_custom) | unique }}"
-nginx_config_load_modules_default: "{{ ['modules/ngx_http_acme_module.so'] if nginx_config_acme_issuer_enabled else [] }}"
-nginx_config_load_modules_auto: []
-nginx_config_load_modules_custom: []
-
-# Specifies the primary entrypoint.
-# We default to the web-secure entrypoint if it's enabled.
-# When web-secure is enabled, the web (80) entrypoint redirects to web-secure (443)
-#
-# Nginx has no concept of entrypoints. This role emulates them by generating
-# a small configuration snippet for each entrypoint (containing the necessary `listen` directives, etc.)
-# at `/config/entrypoints/ENTRYPOINT_NAME.conf` (in-container path).
-#
-# Sites (see `nginx_sites`) are meant to `include` the snippet for the entrypoint they'd like to be served on. Example:
-#   include /config/entrypoints/{{ nginx_entrypoint_primary }}.conf;
-nginx_entrypoint_primary: "{{ nginx_config_entrypoint_web_secure_name if nginx_config_entrypoint_web_secure_enabled else (nginx_config_entrypoint_web_name if nginx_config_entrypoint_web_enabled else '') }}"
-
-# Specifies the primary ACME issuer.
-# If you're disabling ACME or using your own, you can specify it here manually.
-#
-# Similarly to entrypoints, this role generates a configuration snippet for each ACME issuer
-# (containing the `acme_certificate`, `ssl_certificate` and `ssl_certificate_key` directives)
-# at `/config/acme-issuers/ACME_ISSUER_NAME.conf` (in-container path).
-#
-# Sites (see `nginx_sites`) served over the web-secure entrypoint are meant to `include` it. Example:
-#   include /config/acme-issuers/{{ nginx_acme_issuer_primary }}.conf;
-nginx_acme_issuer_primary: "{{ nginx_config_acme_issuer_name if nginx_config_acme_issuer_enabled else '' }}"
-
-# Controls the `error_log` level.
-# See: https://nginx.org/en/docs/ngx_core_module.html#error_log
+# nginx_config_log_level controls the `error_log` level.
+# Valid values: debug, info, notice, warn, error, crit, alert, emerg
 nginx_config_log_level: warn
 
-# Controls the `worker_processes` directive.
-nginx_config_worker_processes: auto
-
-# Controls the `worker_connections` directive.
-nginx_config_worker_connections: 1024
-
-# Controls whether logs for incoming requests are collected
+# nginx_config_access_log_enabled controls whether logs for incoming requests are collected
 nginx_config_access_log_enabled: true
 
-# Controls the access log format (`json` or `combined`)
-nginx_config_access_log_format: "combined"
+# nginx_config_worker_processes controls the `worker_processes` directive.
+nginx_config_worker_processes: auto
 
-# Controls the access log file path (in-container path).
-# By default, logs are sent to stdout (and thus to the systemd journal).
-nginx_config_access_log_file_path: "/dev/stdout"
+# nginx_config_worker_connections controls the `worker_connections` directive.
+nginx_config_worker_connections: 1024
 
-# Controls the access log buffer size (e.g. `64k`). An empty value disables buffering.
-# See: https://nginx.org/en/docs/http/ngx_http_log_module.html#access_log
-nginx_config_access_log_buffer_size: ""
+# nginx_config_client_max_body_size controls the `client_max_body_size` directive,
+# which limits the size of request bodies (e.g. uploads).
+nginx_config_client_max_body_size: 10m
 
-# Controls the `resolver` directive, which is used for resolving hostnames at runtime.
-# It's required by the ACME module (see `nginx_config_acme_issuer_enabled`)
-# and by sites which `proxy_pass` to a variable (e.g. `set $backend http://service:8080; proxy_pass $backend;`).
+# nginx_config_resolver controls the `resolver` directive, used for resolving hostnames at runtime.
+# This is useful when proxying to a variable (e.g. `set $backend http://service:8080; proxy_pass $backend;`),
+# so that Nginx can start even if the upstream container is not running.
 #
-# The default points to Docker's embedded DNS server, which is only available for containers
+# The default points to Docker's embedded DNS server, which is available for containers
 # connected to a user-defined network (see `nginx_container_network`).
-nginx_config_http_resolver: "127.0.0.11"
-nginx_config_http_resolver_valid: 10s
-nginx_config_http_resolver_ipv6_enabled: false
+nginx_config_resolver: "127.0.0.11 valid=10s ipv6=off"
 
-# Controls whether Nginx `listen`s on IPv6 addresses (in addition to IPv4) inside the container.
-# Enabling this when the container network has no IPv6 support makes Nginx fail to start.
-nginx_config_listen_ipv6_enabled: "{{ devture_systemd_docker_base_ipv6_enabled }}"
-
-# Controls the `server_tokens` directive, which controls whether the Nginx version is revealed in responses.
-nginx_config_http_server_tokens: "off"
-
-# Controls the `client_max_body_size` directive.
-# The default (`0`) disables checking of the client request body size,
-# to match the behavior of other reverse-proxies (e.g. Traefik).
-nginx_config_http_client_max_body_size: "0"
-
-# Controls `client_header_timeout` and `client_body_timeout` - timeouts for reading incoming requests.
-# See https://nginx.org/en/docs/http/ngx_http_core_module.html#client_header_timeout
-nginx_config_http_client_header_timeout: 60s
-nginx_config_http_client_body_timeout: 60s
-
-# Controls `send_timeout` - the timeout between two successive write operations when transmitting a response to the client.
-# See https://nginx.org/en/docs/http/ngx_http_core_module.html#send_timeout
-nginx_config_http_send_timeout: 60s
-
-# Controls `keepalive_timeout` - the maximum duration an idle (keep-alive) connection will remain open.
-# See https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_timeout
-nginx_config_http_keepalive_timeout: 180s
-
-# Controls the timeouts for communicating with proxied (upstream) servers.
-# See https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_connect_timeout
-nginx_config_http_proxy_connect_timeout: 60s
-nginx_config_http_proxy_send_timeout: 60s
-nginx_config_http_proxy_read_timeout: 60s
-
-# Controls whether the default proxy settings (HTTP/1.1, WebSocket upgrade support, `X-Forwarded-*` headers, etc.)
-# are applied in the `http` context, so that all sites inherit them.
+# nginx_server_configuration contains the Nginx configuration (directives in the `server` context)
+# of the default server, which listens on `nginx_container_http_port`.
 #
-# Note: `proxy_set_header` directives are only inherited from the `http` context
-# if the current level (`server` or `location`) does not define any `proxy_set_header` directives of its own.
-nginx_config_http_proxy_defaults_enabled: true
-
-# Controls `set_real_ip_from`, specifying from which IPs to trust the `X-Forwarded-For` header
-# (the real client IP address is then taken from it).
-# By default, we expect that there's no other reverse-proxy in front of us, so we don't trust anything.
-# Also see: `nginx_config_http_real_ip_insecure`
-nginx_config_http_real_ip_trusted_ips: []
-# Controls whether the `X-Forwarded-For` header is trusted from any IP address.
-# Also see: `nginx_config_http_real_ip_trusted_ips`
-nginx_config_http_real_ip_insecure: false
-# Controls the `real_ip_header` directive.
-nginx_config_http_real_ip_header: X-Forwarded-For
-
-# Controls the SSL/TLS protocols and ciphers used for all web-secure sites.
-# The defaults follow Mozilla's "intermediate" configuration: https://ssl-config.mozilla.org/
-nginx_config_http_ssl_protocols: ['TLSv1.2', 'TLSv1.3']
-nginx_config_http_ssl_ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305"
-nginx_config_http_ssl_prefer_server_ciphers: "off"
-nginx_config_http_ssl_session_cache: "shared:SSL:10m"
-nginx_config_http_ssl_session_timeout: 1d
-nginx_config_http_ssl_session_tickets: "off"
-
-# Controls whether Prometheus-compatible metrics will be exposed on a new metrics entrypoint.
+# By default, it serves static files from `nginx_data_path`.
 #
-# Nginx does not support Prometheus natively. Instead, this enables the `stub_status` page,
-# which can be scraped by https://github.com/nginx/nginx-prometheus-exporter
-# See nginx_config_entrypoint_metrics_enabled
-nginx_config_metrics_stub_status_enabled: false
-nginx_config_metrics_stub_status_entrypoint: metrics
-nginx_config_metrics_stub_status_path: /stub_status
-
-# Controls whether the ACME (https://en.wikipedia.org/wiki/Automatic_Certificate_Management_Environment) certificate issuer is enabled.
-# By default, if the web-secure entrypoint is enabled, we enable Let's Encrypt.
-#
-# This uses Nginx's own ACME module: https://nginx.org/en/docs/http/ngx_http_acme_module.html
-nginx_config_acme_issuer_enabled: "{{ nginx_config_entrypoint_web_secure_enabled }}"
-nginx_config_acme_issuer_name: default
-# Optional email address. Let's Encrypt doesn't need and use it anymore,
-# but other ACME providers may require it (see https://github.com/spantaleev/matrix-docker-ansible-deploy/issues/4014#issuecomment-2976933956).
-nginx_config_acme_issuer_email: ""
-# Specifies where the ACME module stores its state (the account key, issued certificates and their private keys).
-nginx_config_acme_issuer_state_path: "/ssl/acme-{{ nginx_config_acme_issuer_name }}" # in-container path
-# nginx_config_acme_issuer_use_staging controls whether the Let's Encrypt staging environment is used or not.
-nginx_config_acme_issuer_use_staging: false
-# nginx_config_acme_issuer_uri specifies the CA server endpoint to use.
-nginx_config_acme_issuer_uri: "{{ 'https://acme-staging-v02.api.letsencrypt.org/directory' if nginx_config_acme_issuer_use_staging else 'https://acme-v02.api.letsencrypt.org/directory' }}"
-# nginx_config_acme_issuer_challenge specifies which ACME challenge type to use (`http-01` or `tls-alpn-01`).
-# The `http-01` challenge requires the web entrypoint, while the `tls-alpn-01` challenge requires the web-secure entrypoint.
-# The DNS challenge is not supported by the Nginx ACME module.
-nginx_config_acme_issuer_challenge: http-01
-# Controls whether the terms of service of the ACME server are accepted. Let's Encrypt requires it.
-nginx_config_acme_issuer_accept_terms_of_service: true
-# Specifies the type of the generated private keys (`ecdsa:256`, `ecdsa:384`, `ecdsa:521`, `rsa:2048`, `rsa:3072`, `rsa:4096`).
-nginx_config_acme_issuer_key: "ecdsa:256"
-# Additional directives to add to the `acme_issuer` block (e.g. `profile`, `preferred_chain`, `external_account_key`, `ssl_trusted_certificate`).
-# See: https://nginx.org/en/docs/http/ngx_http_acme_module.html#acme_issuer
-#
-# Example:
-# nginx_config_acme_issuer_additional_configuration: |
-#   external_account_key my-key-id data:my-base64url-encoded-key;
-nginx_config_acme_issuer_additional_configuration: ""
-# Controls the size of the shared memory zone which holds the issued certificates and their keys.
-# The module's default (256k) is sufficient for approximately 50 ECDSA certificates.
-nginx_config_acme_shared_zone_size: 1M
-
-# Controls whether the web entrypoint is enabled
-nginx_config_entrypoint_web_enabled: true
-nginx_config_entrypoint_web_name: web
-nginx_config_entrypoint_web_port: 80
-nginx_config_entrypoint_web_port_in_container: 8080
-
-# Controls whether the web entrypoint should be redirected to web-secure
-# If web-secure is enabled, we enable this redirection by default.
-#
-# The redirection is performed by the web entrypoint's default server (catch-all),
-# so it applies to all sites which do not explicitly include the web entrypoint themselves.
-# Requests for ACME HTTP-01 challenges are always handled before the redirection.
-nginx_config_entrypoint_web_to_web_secure_redirection_enabled: "{{ nginx_config_entrypoint_web_secure_enabled }}"
-nginx_config_entrypoint_web_to_web_secure_redirection_port: "{{ nginx_config_entrypoint_web_secure_port }}"
-nginx_config_entrypoint_web_to_web_secure_redirection_scheme: https
-nginx_config_entrypoint_web_to_web_secure_redirection_status_code: 308
-
-# Controls whether the web-secure entrypoint is enabled
-nginx_config_entrypoint_web_secure_enabled: true
-nginx_config_entrypoint_web_secure_name: web-secure
-nginx_config_entrypoint_web_secure_port: 443
-nginx_config_entrypoint_web_secure_port_in_container: 8443
-
-# Controls whether HTTP/2 is enabled for the web-secure entrypoint.
-nginx_config_entrypoint_web_secure_http2_enabled: true
-
-# Controls whether HTTP/3 (QUIC) is enabled for the web-secure entrypoint.
-# When enabled, an `Alt-Svc` header advertising HTTP/3 support is sent to clients.
-#
-# Note: `add_header` directives are only inherited from the previous configuration level
-# if the current level does not define any `add_header` directives of its own.
-nginx_config_entrypoint_web_secure_http3_enabled: true
-nginx_config_entrypoint_web_secure_http3_advertised_port: "{{ nginx_config_entrypoint_web_secure_port }}"
-nginx_config_entrypoint_web_secure_http3_alt_svc_max_age: 86400
-
-# Controls whether the metrics entrypoint is enabled
-nginx_config_entrypoint_metrics_enabled: "{{ nginx_config_metrics_stub_status_enabled }}"
-nginx_config_entrypoint_metrics_name: "{{ nginx_config_metrics_stub_status_entrypoint }}"
-nginx_config_entrypoint_metrics_port: 8082
-nginx_config_entrypoint_metrics_port_in_container: 8082
-
-# Controls whether the health entrypoint is enabled.
-# When enabled, a dedicated internal server (not exposed to the host) is set up,
-# which responds to /ping requests with a 200 OK.
-# This is used by the systemd ExecStartPost health check (see nginx_systemd_healthcheck_enabled)
-# to verify Nginx is ready before dependent services start.
-nginx_config_entrypoint_health_enabled: true
-nginx_config_entrypoint_health_name: health
-nginx_config_entrypoint_health_port_in_container: 7777
-
-# Controls the post-start health check in the systemd service.
-# When enabled, ExecStartPost polls Nginx's /ping endpoint, keeping the service
-# in "activating (start-post)" state until Nginx is ready.
-# Services with After=nginx.service will properly wait.
-nginx_systemd_healthcheck_enabled: "{{ nginx_config_entrypoint_health_enabled }}"
-nginx_systemd_healthcheck_max_retries: 30
-nginx_systemd_healthcheck_interval_seconds: 1
-
-# The command used for the health check in ExecStartPost.
-# Uses `docker exec` + `wget` (available in Alpine-based Nginx images) to poll /ping.
-nginx_systemd_healthcheck_command: >-
-  {{ devture_systemd_docker_base_host_command_sh }} -c
-  'for i in $(seq 1 {{ nginx_systemd_healthcheck_max_retries }}); do
-  echo "[Attempt $i/{{ nginx_systemd_healthcheck_max_retries }}] Nginx systemd health check: checking readiness via /ping..";
-  {{ devture_systemd_docker_base_host_command_docker }} exec {{ nginx_identifier }}
-  wget -q --spider http://127.0.0.1:{{ nginx_config_entrypoint_health_port_in_container }}/ping && echo "[Attempt $i/{{ nginx_systemd_healthcheck_max_retries }}] Nginx systemd health check: passed" && exit 0;
-  echo "[Attempt $i/{{ nginx_systemd_healthcheck_max_retries }}] Nginx systemd health check: not ready yet, retrying in {{ nginx_systemd_healthcheck_interval_seconds }}s..";
-  sleep {{ nginx_systemd_healthcheck_interval_seconds }};
-  done; echo "[Attempt $i/{{ nginx_systemd_healthcheck_max_retries }}] Nginx systemd health check: failed after {{ nginx_systemd_healthcheck_max_retries }} attempts"; exit 1'
-
-# Controls whether gzip compression is enabled for responses.
-# See https://nginx.org/en/docs/http/ngx_http_gzip_module.html
-nginx_config_http_gzip_enabled: true
-
-# Controls whether proxied responses are compressed too (`gzip_proxied`).
-nginx_config_http_gzip_proxied: any
-
-# Specifies the gzip compression level (1-9).
-nginx_config_http_gzip_comp_level: 5
-
-# Specifies the minimum amount of bytes a response body must have to be compressed.
-nginx_config_http_gzip_min_length: 1024
-
-# Specifies the MIME types (in addition to `text/html`, which is always compressed) of responses to compress.
-nginx_config_http_gzip_types: "{{ (nginx_config_http_gzip_types_default + nginx_config_http_gzip_types_auto + nginx_config_http_gzip_types_custom) | unique }}"
-nginx_config_http_gzip_types_default:
-  - application/atom+xml
-  - application/javascript
-  - application/json
-  - application/ld+json
-  - application/manifest+json
-  - application/rss+xml
-  - application/vnd.geo+json
-  - application/wasm
-  - application/xhtml+xml
-  - application/xml
-  - font/otf
-  - font/ttf
-  - image/bmp
-  - image/svg+xml
-  - text/cache-manifest
-  - text/css
-  - text/javascript
-  - text/plain
-  - text/vcard
-  - text/xml
-nginx_config_http_gzip_types_auto: []
-nginx_config_http_gzip_types_custom: []
-
-# nginx_status_enabled controls whether the Nginx status page (`stub_status`) is exposed publicly on a hostname.
-# This is the closest Nginx has to a dashboard.
-# See: https://nginx.org/en/docs/http/ngx_http_stub_status_module.html
-nginx_status_enabled: false
-
-# The hostname where the Nginx status page will be exposed on.
-# The status page will be available at https://HOSTNAME/PATH (see `nginx_status_path`).
-nginx_status_hostname: ""
-
-# The path where the Nginx status page will be exposed on.
-nginx_status_path: /nginx_status
-
-# Specifies the entrypoint through which the Nginx status page will be exposed.
-nginx_status_entrypoint: "{{ nginx_entrypoint_primary }}"
-
-nginx_status_tls: "{{ nginx_status_entrypoint != nginx_config_entrypoint_web_name }}"
-nginx_status_tls_acme_issuer: "{{ nginx_acme_issuer_primary }}"
-
-# nginx_status_basicauth_enabled controls if the status page is protected with HTTP Basic authentication.
-# When the status page is enabled, HTTP Basic authentication is also automatically enabled.
-nginx_status_basicauth_enabled: "{{ nginx_status_enabled }}"
-
-# Pre-generated htpasswd content for Nginx status page HTTP Basic authentication.
-# This is the preferred way to configure HTTP Basic authentication, because it
-# avoids the `passlib` dependency and keeps the resulting configuration stable
-# across playbook runs.
-#
-# Also see `nginx_status_basicauth_user` and `nginx_status_basicauth_password`
-# for a legacy convenience method. Ansible will convert those values and store
-# the resulting htpasswd entry in this variable at runtime.
-nginx_status_basicauth_htpasswd: ""
-
-# This convenience method is discouraged. It requires the `passlib` Python
-# library on the Ansible controller, may be affected by passlib/bcrypt
-# compatibility issues (https://foss.heptapod.net/python-libs/passlib/-/issues/196),
-# and generates non-deterministic hashes which can lead to unnecessary changes.
-# Prefer defining `nginx_status_basicauth_htpasswd` instead.
-nginx_status_basicauth_user: ""
-nginx_status_basicauth_password: ""
-# Temporary file name on the host that runs Ansible
-nginx_status_basicauth_file_tmp: "/tmp/ansible-htpasswd-nginx"
-
-# A list of additional entrypoints.
-#
-# Playbooks are meant to inject their defaults into `nginx_additional_entrypoints_auto`.
-# To define your own custom entrypoints, use `nginx_additional_entrypoints_custom`.
-#
-# Each entrypoint must be defined with the following parameters:
-# - name: the name of the entrypoint
-# - port: the port number used for the entrypoint within the Nginx container
-# - host_bind_port: an optional port number (e.g. 1234) or interface + port (0.0.0.0:1234) where the container will publish the TCP port
-# - host_bind_port_udp: an optional port number (e.g. 1234) or interface + port (0.0.0.0:1234) where the container will publish the UDP port (useful if HTTP3 is enabled in the config)
-# - config: an optional string with additional Nginx directives to add to the entrypoint's snippet
-#
-# For each entrypoint, a snippet containing the `listen` directive (followed by `config`) is generated
-# at `/config/entrypoints/ENTRYPOINT_NAME.conf` (in-container path), to be `include`d in sites.
-#
-# Example:
-# nginx_additional_entrypoints:
-#   - name: new-entrypoint
-#     port: 1234
-#     host_bind_port: 1234
-#     config: ""
-#   - name: another-entrypoint
-#     port: 4321
-#     host_bind_port: 127.0.0.1:4321
-#     config: |
-#       http2 on;
-#   - name: http3-enabled-entrypoint
-#     port: 4321
-#     host_bind_port: 127.0.0.1:4321
-#     host_bind_port_udp: 127.0.0.1:4321
-#     config: |
-#       listen 4321 quic;
-#       add_header Alt-Svc 'h3=":4321"; ma=86400' always;
-nginx_additional_entrypoints: "{{ nginx_additional_entrypoints_auto + nginx_additional_entrypoints_custom }}"
-nginx_additional_entrypoints_auto: []
-nginx_additional_entrypoints_custom: []
-
-# A list of additional domains that this role should obtain certificates for.
-#
-# For each domain in the list, a dummy server like this would be added to the configuration:
-#  server {
-#    include /config/entrypoints/web-secure.conf;
-#    server_name example.com;
-#    include /config/acme-issuers/default.conf;
-#    return 404;
-#  }
-#
-# This server does not forward traffic to any service.
-# The goal is to just obtain the certificate and allow it to be used for other purposes,
-# by reading it out of the ACME module's state directory (see `nginx_config_acme_issuer_state_path`).
-#
-# Playbooks are meant to inject their defaults into `nginx_additional_domains_to_obtain_certificates_for_auto`.
-# To define your own custom domains, use `nginx_additional_domains_to_obtain_certificates_for_custom`.
-nginx_additional_domains_to_obtain_certificates_for: "{{ (nginx_additional_domains_to_obtain_certificates_for_default + nginx_additional_domains_to_obtain_certificates_for_auto + nginx_additional_domains_to_obtain_certificates_for_custom) | unique }}"
-nginx_additional_domains_to_obtain_certificates_for_default: []
-nginx_additional_domains_to_obtain_certificates_for_auto: []
-nginx_additional_domains_to_obtain_certificates_for_custom: []
-
-# Specifies the entrypoint through which the additional domains will be exposed.
-nginx_additional_domains_to_obtain_certificates_for_entrypoint: "{{ nginx_config_entrypoint_web_secure_name if nginx_config_entrypoint_web_secure_enabled else '' }}"
-
-# Specifies the ACME issuer to use when obtaining additional certificates.
-# See: nginx_additional_domains_to_obtain_certificates_for
-nginx_additional_domains_to_obtain_certificates_for_acme_issuer: "{{ nginx_acme_issuer_primary }}"
-
-# A list of sites (strings containing Nginx configuration - usually one or more `server` blocks)
-# to add to the `http` context of the configuration (see `templates/sites.conf.j2`).
-#
-# This is the Nginx equivalent of routers/services in other reverse-proxies.
-#
-# Playbooks are meant to inject their defaults into `nginx_sites_auto`.
-# To define your own custom sites, use `nginx_sites_custom`.
-#
-# Tip: proxying to a variable (instead of a hostname directly) makes Nginx resolve the hostname at request time
-# (using `nginx_config_http_resolver`), instead of failing to start if the upstream container is not running.
-#
-# Example:
-# nginx_sites_custom:
-#   - |
-#     server {
-#       include /config/entrypoints/{{ nginx_entrypoint_primary }}.conf;
-#       include /config/acme-issuers/{{ nginx_acme_issuer_primary }}.conf;
-#
-#       server_name example.com;
-#
-#       location / {
-#         set $backend http://my-service:8080;
-#         proxy_pass $backend;
-#       }
-#     }
-nginx_sites: "{{ nginx_sites_default + nginx_sites_auto + nginx_sites_custom }}"
-nginx_sites_default: []
-nginx_sites_auto: []
-nginx_sites_custom: []
+# Example (reverse-proxying to another container):
+# nginx_server_configuration: |
+#   location / {
+#     set $backend http://my-service:8080;
+#     proxy_pass $backend;
+#   }
+nginx_server_configuration: |
+  location {{ nginx_path_prefix if nginx_path_prefix == '/' else (nginx_path_prefix + '/') }} {
+    alias /data/;
+    index index.html;
+    try_files $uri $uri/ =404;
+  }
 
 # Default Nginx configuration template which covers the generic use case.
 # You can customize it by controlling the various variables inside it.
 #
-# For a more advanced customization, you can extend the default (see `nginx_configuration_extension_http` and `nginx_configuration_extension_main`)
+# For a more advanced customization, you can extend the default (see `nginx_configuration_extension`)
 # or completely replace this variable with your own template.
 nginx_configuration: "{{ lookup('template', 'templates/nginx.conf.j2') }}"
 
-nginx_configuration_extension_main: |
-  # Your custom Nginx configuration for the `main` (top-level) context goes here.
-  # This configuration extends the default starting configuration (`nginx_configuration`).
-  #
-  # If you need something more special, you can take full control by
-  # completely redefining `nginx_configuration`.
-  #
-  # Example configuration extension follows:
-  #
-  # stream {
-  #   server {
-  #     listen 5349;
-  #     proxy_pass coturn:5349;
-  #   }
-  # }
-
-nginx_configuration_extension_http: |
-  # Your custom Nginx configuration for the `http` context goes here.
-  # This configuration extends the default starting configuration (`nginx_configuration`).
-  #
-  # If you need something more special, you can take full control by
-  # completely redefining `nginx_configuration`.
-  #
-  # Example configuration extension follows:
-  #
-  # large_client_header_buffers 4 16k;
-
-# Default Nginx sites configuration template which covers the generic use case.
-# You can customize it by controlling the various variables inside it.
+# nginx_configuration_extension contains additional Nginx configuration (directives in the `http` context),
+# which extends the default configuration (`nginx_configuration`).
 #
-# For a more advanced customization, you can extend the default (see `nginx_sites_configuration_extension`)
-# or completely replace this variable with your own template.
-nginx_sites_configuration: "{{ lookup('template', 'templates/sites.conf.j2') }}"
+# You can use it to define additional `server` blocks, `upstream` blocks, `map` blocks, etc.
+#
+# Example:
+# nginx_configuration_extension: |
+#   server {
+#     listen 8080;
+#     server_name another.example.com;
+#     return 200 "Hello";
+#   }
+nginx_configuration_extension: ""
 
-nginx_sites_configuration_extension: |
-  # Your custom Nginx sites configuration goes here.
-  # This configuration extends the default starting configuration (`nginx_sites_configuration`).
-  #
-  # If you need something more special, you can take full control by
-  # completely redefining `nginx_sites_configuration`.
-  #
-  # Example configuration extension follows:
-  #
-  # server {
-  #   include /config/entrypoints/web-secure.conf;
-  #   include /config/acme-issuers/default.conf;
-  #
-  #   server_name example.com;
-  #
-  #   return 200 "Hello";
-  # }
+########################################################################
+#                                                                      #
+# /configuration                                                       #
+#                                                                      #
+########################################################################
 
 # Specify the timezone
 nginx_environment_variables_tz: UTC
 
-# nginx_environment_variables contains a multiline string with environment variables to pass to Nginx.
+# nginx_environment_variables_additional_variables contains a multiline string with additional environment variables to pass to the container.
 #
 # Example:
-# nginx_environment_variables: |
-#   SOME_VARIABLE=value
-#   ANOTHER_VARIABLE=another_value
-nginx_environment_variables: ""
+# nginx_environment_variables_additional_variables: |
+#   VAR=1
+#   ANOTHER=value
+nginx_environment_variables_additional_variables: ""
 
-# nginx_restart_necessary controls whether the Nginx systemd service
-# will be restarted (when true) or merely started (when false) by the
+# nginx_restart_necessary controls whether the Nginx systemd
+# service will be restarted (when true) or merely started (when false) by the
 # systemd service manager role (when conditional restart is enabled).
 #
 # This value is automatically computed during installation based on whether
