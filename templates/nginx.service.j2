@@ -1,0 +1,99 @@
+{#
+SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+SPDX-FileCopyrightText: 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+[Unit]
+Description=Nginx ({{ nginx_identifier }})
+{% for service in nginx_systemd_required_services_list %}
+Requires={{ service }}
+After={{ service }}
+{% endfor %}
+{% for service in nginx_systemd_wanted_services_list %}
+Wants={{ service }}
+{% endfor %}
+DefaultDependencies=no
+
+[Service]
+Type=simple
+Environment="HOME={{ devture_systemd_docker_base_systemd_unit_home_path }}"
+ExecStartPre={{ devture_systemd_docker_base_host_command_sh }} -c '{{ nginx_container_cleanup_command | trim | replace("\n", " ") }}'
+
+{#
+Unlike other reverse-proxies, Nginx does not need access to the Docker API (it's configured statically),
+so we can always drop all capabilities and just run with the uid/gid, because:
+- the configuration files are owned by the same uid/gid, so reading them works
+- the container listens on unprivileged ports (e.g. 8080 and 8443), which get published on the host
+- everything that needs to be written (PID file, temporary files) goes to a tmpfs mounted at /tmp
+#}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
+      --rm \
+      --name={{ nginx_identifier }} \
+      --log-driver=none \
+      --user={{ nginx_uid }}:{{ nginx_gid }} \
+      --cap-drop=ALL \
+      --read-only \
+      --tmpfs=/tmp:rw,noexec,nosuid,size={{ nginx_tmp_directory_size_mb }}m \
+      --network={{ nginx_container_network }} \
+      {% for dns_search_domain in nginx_container_dns_search_domains %}
+      --dns-search={{ dns_search_domain }} \
+      {% endfor %}
+      {% if nginx_container_web_host_bind_port %}
+      -p {{ nginx_container_web_host_bind_port }}:{{ nginx_config_entrypoint_web_port_in_container }} \
+      {% endif %}
+      {% if nginx_container_web_secure_host_bind_port %}
+      -p {{ nginx_container_web_secure_host_bind_port }}:{{ nginx_config_entrypoint_web_secure_port_in_container }} \
+      {% endif %}
+      {% if nginx_container_web_secure_host_bind_port_udp %}
+      -p {{ nginx_container_web_secure_host_bind_port_udp }}:{{ nginx_config_entrypoint_web_secure_port_in_container }}/udp \
+      {% endif %}
+      {% if nginx_container_metrics_host_bind_port %}
+      -p {{ nginx_container_metrics_host_bind_port }}:{{ nginx_config_entrypoint_metrics_port_in_container }} \
+      {% endif %}
+      {% for additional_entrypoint in nginx_additional_entrypoints %}
+      {% if additional_entrypoint.host_bind_port %}
+      -p {{ additional_entrypoint.host_bind_port }}:{{ additional_entrypoint.port }} \
+      {% if additional_entrypoint.host_bind_port_udp | default('') %}
+      -p {{ additional_entrypoint.host_bind_port_udp }}:{{ additional_entrypoint.port }}/udp \
+      {% endif %}
+      {% endif %}
+      {% endfor %}
+      --env-file={{ nginx_config_dir_path }}/env \
+      --label-file={{ nginx_config_dir_path }}/labels \
+      --mount type=bind,src={{ nginx_config_dir_path }},dst=/config,ro \
+      {% if nginx_ssl_dir_enabled %}
+      --mount type=bind,src={{ nginx_ssl_dir_path }},dst=/ssl \
+      {% endif %}
+      {% for volume in nginx_container_additional_volumes %}
+      --mount type={{ volume.type | default('bind' if '/' in volume.src else 'volume') }},src={{ volume.src }},dst={{ volume.dst }}{{ (',' + volume.options) if volume.options else '' }} \
+      {% endfor %}
+      {% if nginx_container_extra_arguments | length > 0 %}
+      {{ nginx_container_extra_arguments | join(" ") }} \
+      {% endif %}
+      --entrypoint=nginx \
+      {{ nginx_container_image }} \
+      {{ nginx_process_extra_arguments | join(' ') }}
+
+{% for network in nginx_container_additional_networks %}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} network connect {{ network }} {{ nginx_identifier }}
+{% endfor %}
+
+ExecStart={{ devture_systemd_docker_base_host_command_docker }} start --attach {{ nginx_identifier }}
+
+{% if nginx_systemd_healthcheck_enabled %}
+ExecStartPost={{ nginx_systemd_healthcheck_command }}
+{% endif %}
+
+{# Makes `systemctl reload` apply configuration changes without restarting the container (and dropping connections). #}
+ExecReload={{ devture_systemd_docker_base_host_command_docker }} exec {{ nginx_identifier }} nginx {{ nginx_process_extra_arguments | join(' ') }} -s reload
+
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} stop -t {{ devture_systemd_docker_base_container_stop_grace_time_seconds }} {{ nginx_identifier }} 2>/dev/null || true'
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} rm {{ nginx_identifier }} 2>/dev/null || true'
+Restart=always
+RestartSec=30
+SyslogIdentifier={{ nginx_systemd_syslog_identifier }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+#jinja2: lstrip_blocks: True
+# This file is included in the `http` context of `nginx.conf`.
+#
+# To extend this:
+# - tweak the individual variables
+# - use `nginx_sites` to introduce new sites
+# - use `nginx_sites_configuration_extension` to introduce anything else
+
+{% for domain in nginx_additional_domains_to_obtain_certificates_for %}
+# Dummy server for obtaining a certificate for `{{ domain }}`
+server {
+  server_name {{ domain }};
+
+  include /config/entrypoints/{{ nginx_additional_domains_to_obtain_certificates_for_entrypoint }}.conf;
+  include /config/acme-issuers/{{ nginx_additional_domains_to_obtain_certificates_for_acme_issuer }}.conf;
+
+  return 404;
+}
+
+{% endfor %}
+{% if nginx_status_enabled %}
+# Nginx status page
+server {
+  server_name {{ nginx_status_hostname }};
+
+  include /config/entrypoints/{{ nginx_status_entrypoint }}.conf;
+  {% if nginx_status_tls and nginx_status_tls_acme_issuer %}
+  include /config/acme-issuers/{{ nginx_status_tls_acme_issuer }}.conf;
+  {% endif %}
+
+  location = {{ nginx_status_path }} {
+    {% if nginx_status_basicauth_enabled %}
+    auth_basic "Nginx status";
+    auth_basic_user_file /config/status.htpasswd;
+    {% endif %}
+
+    stub_status;
+  }
+
+  location / {
+    return 404;
+  }
+}
+
+{% endif %}
+{% for site in nginx_sites %}
+{{ site }}
+
+{% endfor %}
+{{ nginx_sites_configuration_extension }}

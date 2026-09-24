@@ -1,0 +1,27 @@
+{#
+SPDX-FileCopyrightText: 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+# Configuration snippet for the `{{ item.name }}` entrypoint.
+# Include it in a `server` block to make it served on this entrypoint.
+
+{% if item.listen is defined %}
+{% for listen in item.listen %}
+listen {{ listen }};
+{% endfor %}
+{% else %}
+listen {{ item.port }};
+{% if nginx_config_listen_ipv6_enabled %}
+listen [::]:{{ item.port }};
+{% endif %}
+{% endif %}
+
+{% if item.http2 | default(false) %}
+http2 on;
+{% endif %}
+{% if item.alt_svc | default('') %}
+add_header Alt-Svc '{{ item.alt_svc }}' always;
+{% endif %}
+
+{{ item.config | default('') }}

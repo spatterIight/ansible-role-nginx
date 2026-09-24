@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: (Deprecation) Catch and report renamed settings
+  ansible.builtin.fail:
+    msg: >-
+      Your configuration contains a variable, which now has a different name.
+      Please change your configuration to rename the variable (`{{ item.old }}` -> `{{ item.new }}`).
+  when: "lookup('ansible.builtin.varnames', ('^' + item.old + '$'), wantlist=True) | length > 0"
+  # Add entries like this when renaming variables:
+  # - { "old": "nginx_old_variable_name", "new": "nginx_new_variable_name" }
+  with_items: []
+
+- name: Fail if required Nginx settings not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required configuration setting (`{{ item }}`).
+  when: "lookup('vars', item, default='') | string | length == 0"
+  with_items:
+    - nginx_uid
+    - nginx_gid
+    - nginx_entrypoint_primary
+
+- name: Fail if required Nginx ACME settings not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required configuration setting (`{{ item }}`) when enabling the ACME certificate issuer.
+  when: "nginx_config_acme_issuer_enabled | bool and lookup('vars', item, default='') | string | length == 0"
+  with_items:
+    - nginx_config_acme_issuer_name
+    - nginx_config_acme_issuer_uri
+    - nginx_config_acme_issuer_state_path
+    - nginx_config_http_resolver
+
+- name: Fail if Nginx ACME challenge type is invalid
+  ansible.builtin.fail:
+    msg: >-
+      `nginx_config_acme_issuer_challenge` must be either `http-01` or `tls-alpn-01`.
+      The DNS challenge is not supported by the Nginx ACME module.
+  when: "nginx_config_acme_issuer_enabled | bool and nginx_config_acme_issuer_challenge not in ['http-01', 'tls-alpn-01']"
+
+- name: Fail if the entrypoint required by the Nginx ACME HTTP challenge is not enabled
+  ansible.builtin.fail:
+    msg: >-
+      The ACME HTTP challenge (`http-01`) requires the web entrypoint (`nginx_config_entrypoint_web_enabled`) to be enabled.
+      Either enable it or switch to the `tls-alpn-01` challenge (`nginx_config_acme_issuer_challenge`).
+  when: "nginx_config_acme_issuer_enabled | bool and nginx_config_acme_issuer_challenge == 'http-01' and not nginx_config_entrypoint_web_enabled | bool"
+
+- name: Fail if the entrypoint required by the Nginx ACME TLS-ALPN challenge is not enabled
+  ansible.builtin.fail:
+    msg: >-
+      The ACME TLS-ALPN challenge (`tls-alpn-01`) requires the web-secure entrypoint (`nginx_config_entrypoint_web_secure_enabled`) to be enabled.
+  when: "nginx_config_acme_issuer_enabled | bool and nginx_config_acme_issuer_challenge == 'tls-alpn-01' and not nginx_config_entrypoint_web_secure_enabled | bool"
+
+- name: Fail if Nginx additional entrypoints are invalid
+  ansible.builtin.fail:
+    msg: >-
+      Each additional entrypoint (`nginx_additional_entrypoints`) must define a `name` and a `port`,
+      and its name must not clash with a built-in entrypoint.
+      Invalid entrypoint: {{ item }}
+  when: >-
+    item.name | default('') | string | length == 0
+    or item.port | default('') | string | length == 0
+    or item.name in [nginx_config_entrypoint_web_name, nginx_config_entrypoint_web_secure_name]
+  with_items: "{{ nginx_additional_entrypoints }}"
+
+- name: Fail if required Nginx settings for obtaining additional certificates not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required configuration setting (`{{ item }}`) for obtaining certificates for additional domains.
+  when: "nginx_additional_domains_to_obtain_certificates_for | length > 0 and lookup('vars', item, default='') | string | length == 0"
+  with_items:
+    - nginx_additional_domains_to_obtain_certificates_for_entrypoint
+    - nginx_additional_domains_to_obtain_certificates_for_acme_issuer
+
+- name: Fail if required Nginx status page settings not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required configuration setting (`{{ item }}`) for enabling the Nginx status page.
+  when: "nginx_status_enabled | bool and lookup('vars', item, default='') | string | length == 0"
+  with_items:
+    - nginx_status_hostname
+    - nginx_status_path
+    - nginx_status_entrypoint
+
+- name: Fail if required Nginx status page HTTP Basic authentication settings not defined
+  ansible.builtin.fail:
+    msg: >-
+      For Nginx status page HTTP Basic authentication, define either
+      `nginx_status_basicauth_htpasswd` or both
+      `nginx_status_basicauth_user` and `nginx_status_basicauth_password`.
+  when: >-
+    nginx_status_basicauth_enabled | bool
+    and nginx_status_basicauth_htpasswd | string | length == 0
+    and (
+      nginx_status_basicauth_user | string | length == 0
+      or nginx_status_basicauth_password | string | length == 0
+    )

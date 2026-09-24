@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2023 Julian-Samuel Gebühr
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+
+# Controls whether the real IP (`set_real_ip_from`, etc.) directives appear in the configuration
+nginx_config_http_real_ip_enabled: "{{ nginx_config_http_real_ip_trusted_ips | length > 0 or nginx_config_http_real_ip_insecure }}"
+
+# The IP addresses from which the real IP header is trusted
+nginx_config_http_real_ip_trusted_ips_final: "{{ (['0.0.0.0/0', '::/0'] if nginx_config_http_real_ip_insecure else nginx_config_http_real_ip_trusted_ips) | unique }}"
+
+# The port suffix (e.g. `:8443`) used when redirecting from the web entrypoint to the web-secure one.
+# It's empty when the port is the default one for the scheme.
+nginx_config_entrypoint_web_to_web_secure_redirection_port_suffix: "{{ '' if (nginx_config_entrypoint_web_to_web_secure_redirection_port | string) in ['', '443'] else (':' + (nginx_config_entrypoint_web_to_web_secure_redirection_port | string)) }}"
+
+# The list of entrypoints for which a configuration snippet is generated at `/config/entrypoints/ENTRYPOINT_NAME.conf` (in-container path).
+#
+# Each entrypoint is defined with the following parameters:
+# - name: the name of the entrypoint
+# - listen: a list of `listen` directive values (when not defined, it's derived from `port`)
+# - http2: an optional boolean controlling whether HTTP/2 is enabled
+# - alt_svc: an optional value for the `Alt-Svc` header (used for advertising HTTP/3 support)
+# - config: an optional string with additional Nginx directives
+#
+# See `nginx_additional_entrypoints` for the definition of additional entrypoints.
+nginx_entrypoints_definitions: |
+  {{
+    (
+      [{
+        'name': nginx_config_entrypoint_web_name,
+        'listen': (
+          [nginx_config_entrypoint_web_port_in_container | string]
+          + (['[::]:' + (nginx_config_entrypoint_web_port_in_container | string)] if nginx_config_listen_ipv6_enabled | bool else [])
+        ),
+        'config': '',
+      }] if nginx_config_entrypoint_web_enabled | bool else []
+    )
+    +
+    (
+      [{
+        'name': nginx_config_entrypoint_web_secure_name,
+        'listen': (
+          [(nginx_config_entrypoint_web_secure_port_in_container | string) + ' ssl']
+          + (['[::]:' + (nginx_config_entrypoint_web_secure_port_in_container | string) + ' ssl'] if nginx_config_listen_ipv6_enabled | bool else [])
+          + ([(nginx_config_entrypoint_web_secure_port_in_container | string) + ' quic'] if nginx_config_entrypoint_web_secure_http3_enabled | bool else [])
+          + (['[::]:' + (nginx_config_entrypoint_web_secure_port_in_container | string) + ' quic'] if nginx_config_entrypoint_web_secure_http3_enabled | bool and nginx_config_listen_ipv6_enabled | bool else [])
+        ),
+        'http2': nginx_config_entrypoint_web_secure_http2_enabled | bool,
+        'alt_svc': ('h3=":' + (nginx_config_entrypoint_web_secure_http3_advertised_port | string) + '"; ma=' + (nginx_config_entrypoint_web_secure_http3_alt_svc_max_age | string)) if nginx_config_entrypoint_web_secure_http3_enabled | bool else '',
+        'config': '',
+      }] if nginx_config_entrypoint_web_secure_enabled | bool else []
+    )
+    +
+    nginx_additional_entrypoints
+  }}

@@ -1,0 +1,16 @@
+{#
+SPDX-FileCopyrightText: 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+# Configuration snippet for the `{{ nginx_config_acme_issuer_name }}` ACME issuer.
+# Include it in a `server` block (served on the web-secure entrypoint) to obtain a certificate
+# for the hostnames defined in its `server_name` directive.
+
+acme_certificate {{ nginx_config_acme_issuer_name }} key={{ nginx_config_acme_issuer_key }};
+
+ssl_certificate $acme_certificate;
+ssl_certificate_key $acme_certificate_key;
+
+# Do not parse the certificate on each request
+ssl_certificate_cache max=2;

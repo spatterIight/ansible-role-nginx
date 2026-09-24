@@ -1,0 +1,237 @@
+# SPDX-FileCopyrightText: 2023 MASH project contributors
+# SPDX-FileCopyrightText: 2023 Niels Bouma
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Ensure Nginx paths exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0750"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  when: item.when | bool
+  with_items:
+    - path: "{{ nginx_base_path }}"
+      when: true
+    - path: "{{ nginx_config_dir_path }}"
+      when: true
+    - path: "{{ nginx_config_dir_path }}/entrypoints"
+      when: true
+    - path: "{{ nginx_config_dir_path }}/acme-issuers"
+      when: true
+    - path: "{{ nginx_ssl_dir_path }}"
+      when: "{{ nginx_ssl_dir_enabled }}"
+
+- name: Generate Nginx status page HTTP Basic authentication content locally
+  when:
+    - nginx_status_basicauth_enabled | bool
+    - nginx_status_basicauth_htpasswd | string | length == 0
+  block:
+    # We do this locally, so that we won't need passlib to be installed on the server.
+    # This path is kept as a legacy convenience option. Prefer pre-generated
+    # `nginx_status_basicauth_htpasswd`, because passlib may be unavailable
+    # or affected by passlib/bcrypt compatibility issues, and generated hashes
+    # are non-deterministic.
+    - name: Generate HTTP Basic authentication file locally
+      community.general.htpasswd:
+        path: "{{ nginx_status_basicauth_file_tmp }}"
+        name: "{{ nginx_status_basicauth_user }}"
+        password: "{{ nginx_status_basicauth_password }}"
+        mode: "0640"
+      become: false
+      delegate_to: 127.0.0.1
+
+    - name: Load HTTP Basic authentication file contents
+      ansible.builtin.slurp:
+        src: "{{ nginx_status_basicauth_file_tmp }}"
+      become: false
+      delegate_to: 127.0.0.1
+      register: nginx_status_basicauth_htpasswd_raw
+
+    - name: Load HTTP Basic authentication file contents
+      ansible.builtin.set_fact:
+        nginx_status_basicauth_htpasswd: "{{ nginx_status_basicauth_htpasswd_raw['content'] | b64decode | trim }}"
+
+    - name: Ensure local temporary HTTP Basic authentication file is removed
+      ansible.builtin.file:
+        path: "{{ nginx_status_basicauth_file_tmp }}"
+        state: absent
+      become: false
+      delegate_to: 127.0.0.1
+
+- name: Ensure Nginx support files installed
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/{{ item }}.j2"
+    dest: "{{ nginx_config_dir_path }}/{{ item }}"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  with_items:
+    - env
+    - labels
+  register: nginx_support_files_result
+
+- name: Ensure Nginx status page HTTP Basic authentication file installed
+  when: nginx_status_basicauth_enabled | bool
+  ansible.builtin.copy:
+    content: "{{ nginx_status_basicauth_htpasswd }}\n"
+    dest: "{{ nginx_config_dir_path }}/status.htpasswd"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  register: nginx_status_htpasswd_file_result
+
+- name: Ensure Nginx status page HTTP Basic authentication file does not exist
+  when: not nginx_status_basicauth_enabled | bool
+  ansible.builtin.file:
+    path: "{{ nginx_config_dir_path }}/status.htpasswd"
+    state: absent
+
+- name: Ensure Nginx entrypoint configuration snippets installed
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/entrypoint.conf.j2"
+    dest: "{{ nginx_config_dir_path }}/entrypoints/{{ item.name }}.conf"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  with_items: "{{ nginx_entrypoints_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: nginx_entrypoint_files_result
+
+- name: Ensure Nginx ACME issuer configuration snippet installed
+  when: nginx_config_acme_issuer_enabled | bool
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/acme-issuer.conf.j2"
+    dest: "{{ nginx_config_dir_path }}/acme-issuers/{{ nginx_config_acme_issuer_name }}.conf"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  register: nginx_acme_issuer_file_result
+
+# Entrypoints and ACME issuers may get renamed or disabled,
+# so we make sure that no stale configuration snippets are left behind for sites to (mistakenly) include.
+- name: Find Nginx configuration snippets
+  ansible.builtin.find:
+    paths:
+      - "{{ nginx_config_dir_path }}/entrypoints"
+      - "{{ nginx_config_dir_path }}/acme-issuers"
+    patterns: "*.conf"
+  register: nginx_snippet_files_found
+
+- name: Ensure stale Nginx configuration snippets do not exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  when: item.path not in nginx_snippet_files_expected
+  with_items: "{{ nginx_snippet_files_found.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  vars:
+    nginx_snippet_files_expected: |
+      {{
+        (nginx_entrypoints_definitions | map(attribute='name') | map('regex_replace', '^(.*)$', nginx_config_dir_path + '/entrypoints/\1.conf') | list)
+        + ([nginx_config_dir_path + '/acme-issuers/' + nginx_config_acme_issuer_name + '.conf'] if nginx_config_acme_issuer_enabled | bool else [])
+      }}
+  register: nginx_stale_snippet_files_result
+
+- name: Ensure nginx.conf installed
+  ansible.builtin.copy:
+    content: "{{ nginx_configuration }}"
+    dest: "{{ nginx_config_dir_path }}/nginx.conf"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  register: nginx_config_file_result
+
+- name: Ensure sites.conf installed
+  ansible.builtin.copy:
+    content: "{{ nginx_sites_configuration }}"
+    dest: "{{ nginx_config_dir_path }}/sites.conf"
+    mode: "0640"
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+  register: nginx_sites_file_result
+
+# The ACME module stores the account key, issued certificates and their private keys in its state directory.
+# The container runs with the configured uid/gid, so the state directory (and the files in it)
+# must be owned by them. Ownership may become incorrect for various reasons (e.g. restoring from a backup),
+# so this is here to ensure we correct it if it happens.
+- name: Ensure Nginx SSL directory ownership is correct
+  when: nginx_ssl_dir_enabled | bool
+  ansible.builtin.file:
+    path: "{{ nginx_ssl_dir_path }}"
+    state: directory
+    recurse: true
+    owner: "{{ nginx_uid }}"
+    group: "{{ nginx_gid }}"
+
+- name: Ensure Nginx container image is pulled via community.docker.docker_image_pull
+  when: devture_systemd_docker_base_container_image_pull_method == 'ansible-module'
+  community.docker.docker_image_pull:
+    name: "{{ nginx_container_image }}"
+    pull: always
+  register: nginx_container_image_pull_result_ansible_module
+  retries: "{{ devture_playbook_help_container_retries_count }}"
+  delay: "{{ devture_playbook_help_container_retries_delay }}"
+  until: nginx_container_image_pull_result_ansible_module is not failed
+
+- name: Ensure Nginx container image is pulled via ansible.builtin.command
+  when: devture_systemd_docker_base_container_image_pull_method == 'command'
+  ansible.builtin.command:
+    cmd: "{{ devture_systemd_docker_base_host_command_docker }} pull {{ nginx_container_image }}"
+  register: nginx_container_image_pull_result_command
+  retries: "{{ devture_playbook_help_container_retries_count }}"
+  delay: "{{ devture_playbook_help_container_retries_delay }}"
+  until: nginx_container_image_pull_result_command is not failed
+  changed_when: "'Downloaded newer image' in nginx_container_image_pull_result_command.stdout"
+
+- name: Run if 'host' network is not specified to be used
+  when: nginx_container_network != 'host'
+  block:
+    - name: Ensure Nginx container network exists via community.docker.docker_network
+      when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
+      community.docker.docker_network:
+        enable_ipv6: "{{ devture_systemd_docker_base_ipv6_enabled }}"
+        name: "{{ nginx_container_network }}"
+        driver: bridge
+        driver_options: "{{ devture_systemd_docker_base_container_networks_driver_options }}"
+
+    - name: Ensure Nginx container network is created via ansible.builtin.command
+      when: devture_systemd_docker_base_container_network_creation_method == 'command'
+      ansible.builtin.command:
+        cmd: >-
+          {{ devture_systemd_docker_base_host_command_docker }} network create
+          {% if devture_systemd_docker_base_ipv6_enabled %}--ipv6{% endif %}
+          {{ devture_systemd_docker_base_container_networks_driver_options_string }}
+          {{ nginx_container_network }}
+      register: network_creation_result
+      changed_when: network_creation_result.rc == 0
+      failed_when: network_creation_result.rc != 0 and 'already exists' not in network_creation_result.stderr
+
+- name: Ensure Nginx systemd service is present
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/nginx.service.j2"
+    dest: "{{ devture_systemd_docker_base_systemd_path }}/{{ nginx_identifier }}.service"
+    mode: "0644"
+  register: nginx_systemd_service_result
+
+- name: Determine whether Nginx needs a restart
+  ansible.builtin.set_fact:
+    nginx_restart_necessary: >-
+      {{
+        nginx_support_files_result.changed | default(false)
+        or nginx_status_htpasswd_file_result.changed | default(false)
+        or nginx_entrypoint_files_result.changed | default(false)
+        or nginx_acme_issuer_file_result.changed | default(false)
+        or nginx_stale_snippet_files_result.changed | default(false)
+        or nginx_config_file_result.changed | default(false)
+        or nginx_sites_file_result.changed | default(false)
+        or nginx_systemd_service_result.changed | default(false)
+        or nginx_container_image_pull_result_ansible_module.changed | default(false)
+        or nginx_container_image_pull_result_command.changed | default(false)
+      }}
