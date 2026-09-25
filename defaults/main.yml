@@ -17,7 +17,7 @@ nginx_base_path: "/{{ nginx_identifier }}"
 nginx_config_path: "{{ nginx_base_path }}/config"
 nginx_data_path: "{{ nginx_base_path }}/data"
 
-# renovate: datasource=docker depName=library/nginx versioning=semver
+# renovate: datasource=docker depName=nginxinc/nginx-unprivileged versioning=semver
 nginx_version: 1.31.6
 
 nginx_uid: ""
@@ -30,7 +30,7 @@ nginx_hostname: ""
 # This value must either be `/` or not end with a slash (e.g. `/nginx`).
 nginx_path_prefix: /
 
-nginx_container_image: "{{ nginx_container_image_registry_prefix }}nginx:{{ nginx_container_image_tag }}"
+nginx_container_image: "{{ nginx_container_image_registry_prefix }}nginxinc/nginx-unprivileged:{{ nginx_container_image_tag }}"
 nginx_container_image_tag: "{{ nginx_version }}-alpine"
 nginx_container_image_registry_prefix: "{{ nginx_container_image_registry_prefix_upstream }}"
 nginx_container_image_registry_prefix_upstream: "{{ nginx_container_image_registry_prefix_upstream_default }}"
